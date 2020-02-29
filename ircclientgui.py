@@ -1,4 +1,4 @@
-import sys, settings
+import sys
 from PyQt5.QtWidgets import (QMainWindow, QApplication)
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 from gui import Ui_MainWindow
@@ -13,27 +13,25 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         super(MainWindow, self).__init__()
         self.setupUi(self)
         self.textWindow.setReadOnly(True)
-        self.connectButton.clicked.connect(self.initConnection)
-        self.submitBox.returnPressed.connect(self.submitText)
+        self.connectButton.clicked.connect(self.init_connection)
+        self.submitBox.returnPressed.connect(self.submit_text)
 
         self.config = configparser.ConfigParser()
         self.config.read('config.ini')
         self.threads = []
-        settings.Channel = str(self.config['Settings']['Channel'])
-        settings.IrcServer = str(self.config['Settings']['IrcServer'])
-        settings.PortNumber = int(self.config['Settings']['PortNumber'])
-        settings.Nick = str(self.config['Settings']['Nick'])
-        settings.RealName = str(self.config['Settings']['RealName'])
+        self.channel = str(self.config['Settings']['Channel'])
+        self.nick = str(self.config['Settings']['Nick'])
+        self.realName = str(self.config['Settings']['RealName'])
 
-    def initConnection(self):
+    def init_connection(self):
         print("Creating connection")
-        connection = messageThread()
+        connection = MessageThread()
         # Have to add thread to a list or get a buffer overrun. So much why...
         self.threads.append(connection)
         connection.lineReader.connect(self.parse_line)
-        self.senderObject = messageSender()
+        self.senderObject = MessageSender()
         self.senderObject.moveToThread(connection)
-        self.senderObject.lineSender.connect(connection.submitMessage)
+        self.senderObject.lineSender.connect(connection.submit_message)
         print("senderObject done")
 
     def parse_line(self, CurrentLine):
@@ -59,8 +57,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.send_line(PongLine)
         if messageList[-1] == "response":
             print("Sending response")
-            nick = settings.Nick
-            real = settings.RealName
+            nick = self.nick
+            real = self.realName
             NickString = "NICK " + nick + "\r\n"
             UserString = "USER " + nick + " 1 1 1 :" + real + "\r\n"
             self.send_line(NickString)
@@ -69,45 +67,50 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             print("Sent response")
         if messageList[-1] == "+i":
             print("Joining channel")
-            ChanJoinString = "JOIN " + settings.Channel + "\r\n"
+            ChanJoinString = "JOIN " + self.channel + "\r\n"
             outLine = outLine + " " + ChanJoinString
             self.send_line(ChanJoinString)
 
         self.textWindow.append(outLine)
 
-    def submitText(self):
-        messageText = str(self.submitBox.text())
-        if messageText[0] == "/":
-            if messageText[1:4] == "msg":
-                targetName = messageText.split()
-                bodyText = " ".join(targetName[2:])
-                finalText = "PRIVMSG " + targetName[1] + " :" + bodyText + "\r\n"
-            else:
-                finalText = messageText[1:] + "\r\n"
-                self.textWindow.append(messageText)
+    def submit_text(self):
+        if self.submitBox.text() == "":
+            pass
         else:
-            finalText = "PRIVMSG " + settings.Channel + " :" + messageText + "\r\n"
-            self.textWindow.append("<" + settings.Nick + "> " + messageText)
-        self.send_line(finalText)
-        if self.chkEcho.isChecked():
-            print("messageText: " + messageText)
-            print("finalText: " + finalText)
-        self.submitBox.clear()
+            messageText = str(self.submitBox.text())
+            if messageText[0] == "/":
+                if messageText[1:4] == "msg":
+                    targetName = messageText.split()
+                    bodyText = " ".join(targetName[2:])
+                    finalText = "PRIVMSG " + targetName[1] + " :" + bodyText + "\r\n"
+                else:
+                    finalText = messageText[1:] + "\r\n"
+                    self.textWindow.append(messageText)
+            else:
+                finalText = "PRIVMSG " + self.channel + " :" + messageText + "\r\n"
+                self.textWindow.append("<" + self.nick + "> " + messageText)
+            self.send_line(finalText)
+            if self.chkEcho.isChecked():
+                print("messageText: " + messageText)
+                print("finalText: " + finalText)
+            self.submitBox.clear()
 
     def send_line(self, messageText):
         self.senderObject.lineSender.emit(messageText)
 
 
-class messageSender(QObject):
+class MessageSender(QObject):
     lineSender = pyqtSignal(object)
 
 
-class messageThread(QThread):
+class MessageThread(QThread):
     lineReader = pyqtSignal(object)
 
     def __init__(self):
-        self.IrcServer = settings.IrcServer
-        self.PortNumber = settings.PortNumber
+        self.config = configparser.ConfigParser()
+        self.config.read('config.ini')
+        self.ircServer = str(self.config['Settings']['IrcServer'])
+        self.portNumber = int(self.config['Settings']['PortNumber'])
         self.SockObj = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.ReadBuffer = ""
         QThread.__init__(self)
@@ -115,25 +118,28 @@ class messageThread(QThread):
 
     def run(self):
         print("Preparing to connect")
-        self.connectServer()
+        self.connect_server()
 
-    def connectServer(self):
-        # Buffer overrun if single parens used. Seriously, what the fuck Python?
-        resp = self.SockObj.connect((self.IrcServer, self.PortNumber))
-        print(resp)
+    def connect_server(self):
+        """Connect to IRC server"""
+        resp = self.SockObj.connect((self.ircServer, self.portNumber))
+        print(f"Response: {resp}")
         while 1:
             self.update_messages()
 
     def update_messages(self):
+        """Get new batch of messages from the message buffer"""
         self.ReadBuffer = self.ReadBuffer + self.SockObj.recv(1024).decode('utf-8')
         BufferList = self.ReadBuffer.split("\n")
         self.ReadBuffer = BufferList.pop()
 
         for CurrentLine in BufferList:
             TrimmedLine = CurrentLine.rstrip()
+            print(f"Current line in buffer: {TrimmedLine}")
             self.lineReader.emit(TrimmedLine)
 
-    def submitMessage(self, messageText):
+    def submit_message(self, messageText):
+        """Send message to IRC server"""
         self.SockObj.send(messageText.encode('utf-8'))
 
 
